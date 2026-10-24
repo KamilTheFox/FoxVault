@@ -1,93 +1,531 @@
-# FoxVault
+# foxvault
 
+**foxvault 1.1.0** — консольная утилита для хранения файлов в зашифрованном
+контейнере на флешке. По духу — «docker для файлов»: снаружи контейнер —
+просто папка с непонятными файлами, внутри — привычный набор каталогов.
+Вводите пароль, попадаете в shell и работаете с файлами, как в sftp:
+`ls`, `cd`, `mkdir`, `put`, `get`, `edit` и т.д.
 
+Ключевые свойства:
 
-## Getting started
+- **Один файл, ничего не устанавливается** — статический `foxvault.exe`
+  (Windows) или одиночный бинарник (Linux). Никаких драйверов, монтирования,
+  прав администратора, браузера и сети.
+- **Контейнер живёт на флешке** и переносится на любой компьютер: папка
+  с контейнером + бинарник — вот и вся «инсталляция».
+- **Всё зашифровано, включая имена файлов и структуру каталогов.**
+  Без пароля видно лишь количество блобов и суммарный размер на диске.
+- **Устойчивость к выдёргиванию флешки.** Существующие данные никогда
+  не перезаписываются на месте; сбой питания или извлечение носителя
+  в худшем случае отменяют последнюю незавершённую операцию.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+> Принцип безопасности: утилита трогает только собственный каталог
+> контейнера и файлы, которые вы явно указали. `put` копирует (не перемещает),
+> `get` не затирает существующие файлы, сетевого кода нет вообще.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+---
 
-## Add your files
+## Возможности
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+- AES-256-GCM (аутентифицированное шифрование, аппаратное ускорение AES-NI);
+- ключи из пароля: PBKDF2-HMAC-SHA256, по умолчанию 600 000 итераций;
+- **конверт (envelope)**: мастер-ключ обёрнут ключом из пароля — смена
+  пароля не перешифровывает данные, а затирание заголовков мгновенно
+  уничтожает контейнер;
+- шифрованный индекс (имена, дерево каталогов, размеры) + блобы содержимого
+  по 256 КиБ, каждый чанк — отдельный `nonce | ciphertext | tag`;
+- двойные слоты заголовка и индекса с номерами поколений — атомарные записи
+  через временный файл, fsync и замену;
+- shell в стиле bash/sftp с автодополнением по Tab (команды, пути
+  контейнера и пути хоста), кавычками в аргументах, копированием `put`/`get`
+  и бинарно-корректным `cat`;
+- **встроенный редактор `edit`**: правит текст целиком в памяти, на диск
+  хоста ничего не пишется, сохранение кладёт файл прямо в контейнер;
+- детальная справка по каждой команде: `foxvault help <команда>`,
+  `<команда> --help`, внутри shell — `help <команда>` / `<команда> --help`;
+- при создании контейнера — анимация «Создаю контейнер . .. ...»
+  (в пайпах/скриптах автоматически подавляется);
+- короткие имена контейнеров (alias) вместо длинных путей;
+- автоблокировка по бездействию: ключи стираются из памяти
+  (буферы ключей под `mlock`/`VirtualLock`, защита от подкачки);
+- полная поддержка кириллицы в именах файлов и в вводе команд
+  (UTF-8 внутри, UTF-16 на Windows);
+- контроль целостности: любое повреждение/подмена блоба или индекса
+  обнаруживается при чтении (GCM-тег).
 
+---
+
+## Быстрый старт
+
+```text
+# 1. создать контейнер (спросит пароль дважды)
+foxvault create E:\vaults\work
+
+# 2. войти
+foxvault open E:\vaults\work
+# или короче, если alias задан:
+foxvault alias work E:\vaults\work
+foxvault work
+
+# 3. внутри shell (Tab дополняет команды и пути)
+foxvault:/> mkdir /документы
+foxvault:/> put C:\Users\me\отчёт.txt /документы/
+foxvault:/> ls -l /документы
+foxvault:/> get /документы/отчёт.txt host:копия.txt
+foxvault:/> edit /заметки.txt        # правка в памяти, s — сохранить
+foxvault:/> exit
 ```
-cd existing_repo
-git remote add origin https://gitlab.fox/FoxFox/foxvault.git
-git branch -M main
-git push -uf origin main
+
+Справка по любой команде: `foxvault help <команда>` или
+`<команда> --help`; внутри shell — то же самое.
+
+---
+
+## Установка
+
+### Готовые бинарники
+
+| Файл | Что это |
+|------|---------|
+| `foxvault-windows-x86_64.exe` | статический exe; из системы нужны только `kernel32.dll`, `bcrypt.dll`, `shell32.dll` и UCRT (`ucrtbase.dll`) — всё есть на любом Windows 10+ |
+| `foxvault-linux-x86_64` | ELF-бинарник x86-64; при сборке через Docker (`Dockerfile.build`) — полностью статический (musl), запускается на любом дистрибутиве; при обычной сборке в Linux — динамически линкуется с glibc |
+
+Скопируйте файл куда угодно:
+
+- **Хотите вызывать `foxvault` из любого каталога cmd** — положите exe
+  в постоянную папку (например, `C:\Tools\foxvault.exe`) и добавьте
+  эту папку в пользовательский `PATH`
+  (Параметры → «Переменные среды», либо PowerShell:
+  `[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","User") + ";C:\Tools", "User")`,
+  после чего откройте новый cmd).
+- **Портативный вариант** — держите exe в корне флешки: cmd ищет программы
+  в текущем каталоге, поэтому достаточно перейти на диск (`E:`) и вызвать
+  `foxvault`. Ничего в системе менять не нужно.
+
+В Linux: скопируйте бинарник в `~/.local/bin` (обычно уже в `PATH`)
+или `/usr/local/bin` (нужен root).
+
+### Где запускать на Windows
+
+Интерактивный shell рассчитан на настоящую консоль Windows: **cmd,
+PowerShell, Windows Terminal**. В эмуляторах на пайпах (Git Bash/mintty,
+вывод среды разработки) stdin — не консоль, поэтому foxvault переходит
+в построчный режим: команды работают, но Tab-дополнения нет, а пароль
+вводится с эхом. Для mintty запускайте через `winpty foxvault ...`.
+
+### Сборка из исходников
+
+Требования: CMake ≥ 3.16, компилятор C11 (GCC / Clang / MinGW-w64).
+Нужен Mbed TLS 3.6 LTS в `third_party/mbedtls`; собираются только нужные
+файлы с собственным конфигом `config/foxvault_mbedtls_config.h`. Если
+каталога ещё нет:
+
+```sh
+git clone --depth 1 --branch mbedtls-3.6.7 \
+    https://github.com/Mbed-TLS/mbedtls.git third_party/mbedtls
 ```
 
-## Integrate with your tools
+Для каждой платформы используйте свой каталог сборки (`build` для
+Windows, `build-linux` для Linux). Если конфигурирование однажды упало
+или вы сменили компилятор, удалите каталог сборки целиком: CMake кэширует
+найденный (или не найденный) компилятор.
 
-* [Set up project integrations](https://gitlab.fox/FoxFox/foxvault/-/settings/integrations)
+#### Windows: MSYS2 UCRT64 + Ninja
 
-## Collaborate with your team
+1. Установите [MSYS2](https://www.msys2.org/). В окне **MSYS2 UCRT64**
+   поставьте компилятор, Ninja и CMake:
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+   ```sh
+   pacman -Syu
+   pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-cmake
+   ```
 
-## Test and Deploy
+2. Добавьте `C:\msys64\ucrt64\bin` в пользовательский `PATH` (один раз,
+   PowerShell):
 
-Use the built-in continuous integration in GitLab.
+   ```powershell
+   [Environment]::SetEnvironmentVariable("Path", "C:\msys64\ucrt64\bin;" + [Environment]::GetEnvironmentVariable("Path","User"), "User")
+   ```
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+   Изменение видно только в **новых** окнах. Терминал внутри VS Code
+   или другой IDE наследует `PATH` от самой IDE — её нужно перезапустить
+   целиком. Проверка: `where.exe gcc ninja` должен показать пути
+   в `C:\msys64\ucrt64\bin`.
 
-***
+3. Сборка из корня проекта (PowerShell или cmd):
 
-# Editing this README
+   ```powershell
+   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc
+   cmake --build build
+   # бинарник: build\foxvault.exe — линкуется статически (-static),
+   # DLL из MSYS2 рядом с ним не нужны
+   ```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Типичная ошибка `CMake was unable to find a build program corresponding
+to "Ninja"` / `CMAKE_C_COMPILER not set` означает, что `gcc` и `ninja`
+не видны в `PATH` текущего окна (см. шаг 2). После исправления удалите
+каталог `build`.
 
-## Suggestions for a good README
+#### Linux через Docker (из Windows или любой ОС)
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+Отдельный Linux не нужен — достаточно Docker Desktop. Образ из
+`Dockerfile.build` основан на Alpine (musl), поэтому получается полностью
+статический бинарник, не зависящий от версии glibc.
 
-## Name
-Choose a self-explaining name for your project.
+```powershell
+# один раз: собрать образ
+docker build -f Dockerfile.build -t foxvault-build .
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+# сборка проекта (PowerShell; в cmd вместо ${PWD} — %cd%)
+docker run --rm -v "${PWD}:/src" foxvault-build
+# бинарник: build-linux/foxvault
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+# проверка, что бинарник статический
+docker run --rm -v "${PWD}:/src" foxvault-build sh -c "file build-linux/foxvault; ./build-linux/foxvault version"
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+# функциональные тесты в том же контейнере
+docker run --rm -v "${PWD}:/src" foxvault-build bash -c "BIN=/src/build-linux/foxvault bash scripts/test_foxvault.sh"
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+Контейнер берёт исходники и `third_party/mbedtls` из примонтированного
+каталога и в сеть при сборке не ходит. Для `file` в образе должен быть
+одноимённый пакет (`apk add file`). Если нужна сборка с glibc, замените
+в `Dockerfile.build` базовый образ на `debian:stable-slim`, пакеты — на
+`build-essential cmake ninja-build git file`, и уберите `-static`.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+#### Linux нативно
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+```sh
+sudo apt install -y build-essential cmake ninja-build git   # Debian/Ubuntu
+cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-linux
+# бинарник: build-linux/foxvault (динамически с glibc)
+```
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+#### Кросс-компиляция Windows-exe из Linux (zig cc)
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+```sh
+pip install ziglang          # один раз
+./scripts/build_win.sh       # → build-win/foxvault.exe (статический)
+```
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+#### Диагностическая сборка с санитайзерами (Linux)
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+```sh
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DFV_ASAN=ON
+cmake --build build-asan
+```
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+Собранный бинарник можно переименовать как угодно — имя роли не играет.
 
-## License
-For open source projects, say how it is licensed.
+---
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+## Использование
+
+### Команды снаружи контейнера (в стиле docker)
+
+| Команда | Назначение |
+|---------|-----------|
+| `foxvault create <каталог>` | создать контейнер в указанном каталоге (каталог создаётся вместе с родителями; пароль запрашивается дважды; предупреждение, если пароль короче 8 символов) |
+| `foxvault open <контейнер>` | открыть контейнер и войти в shell (до 3 попыток пароля) |
+| `foxvault <контейнер>` | то же, что `open` — контейнер можно указать первым словом; есть и синоним `shell` |
+| `foxvault cp <источник> <цель>` | копировать файл без входа в shell; **ровно одна** из сторон должна быть контейнером: `<имя>:<путь>` |
+| `foxvault info <контейнер>` | сведения **без пароля**: uuid, формат, число итераций KDF, поколение заголовка, количество блобов и суммарный размер |
+| `foxvault passwd <контейнер>` | сменить пароль (данные не перешифровываются) |
+| `foxvault destroy <контейнер>` | мгновенно уничтожить контейнер (потребует набрать `YES`) |
+| `foxvault alias [<имя> [<путь>]]` | список / просмотр / создание коротких имён |
+| `foxvault unalias <имя>` | удалить короткое имя |
+| `foxvault help [<команда>]` | общая справка или подробно по команде (то же: `<команда> --help`) |
+| `foxvault version` | версия программы, формат контейнера и версия Mbed TLS |
+
+`<контейнер>` везде — путь к каталогу контейнера либо заданный alias.
+Поддерживается раскрытие `~`, `%VAR%` (Windows) и `$VAR` / `${VAR}` (Linux).
+
+### Короткие имена (alias)
+
+```sh
+foxvault alias                    # показать все
+foxvault alias work               # куда указывает «work»
+foxvault alias work E:\vaults\work
+foxvault work                     # открыть по короткому имени
+foxvault unalias work
+```
+
+Имя alias — латиница, цифры, `_`, `-`, `.`, до 63 символов.
+Хранятся на **текущей машине** (не на флешке):
+
+- Windows: `%APPDATA%\foxvault\aliases.txt`
+- Linux: `${XDG_CONFIG_HOME:-~/.config}/foxvault/aliases.txt`
+
+Файл перезаписывается атомарно; при смене буквы диска alias просто
+пересоздаётся.
+
+### Копирование без входа в shell (`cp`)
+
+Сторона контейнера записывается как `<имя>:<путь>`, сторона хоста —
+как обычный путь или с явным префиксом `host:`:
+
+```sh
+foxvault cp отчёт.txt work:/документы/отчёт.txt        # хост → контейнер
+foxvault cp work:/документы/отчёт.txt host:копия.txt   # контейнер → хост
+```
+
+Разбор сторон разумный: `C:\...` на Windows распознаётся как диск,
+а не как контейнер `C`; `work:` (без пути) означает корень контейнера;
+`work:относительный` трактуется как `/относительный`. Пароль
+запрашивается на время копирования и сразу стирается.
+
+### Shell внутри контейнера
+
+| Команда | Действие |
+|---------|----------|
+| `ls [-l] [путь]` | список файлов (`-l` — размеры и время) |
+| `cd [путь]` | сменить каталог (без аргумента — корень) |
+| `pwd` | текущий каталог контейнера |
+| `mkdir <путь>...` | создать каталог (родители не создаются) |
+| `mv <из> <в>` | переименовать/переместить файл или каталог |
+| `rm [-r] <путь>...` | удалить файл или каталог (без `-r` каталог должен быть пуст) |
+| `cat <файл>...` | вывести файл в stdout без искажений (бинарно) |
+| `stat <путь>` | сведения об объекте: тип, размер, размер чанка, время изменения |
+| `put <хост>... [путь]` | скопировать файл с компьютера в контейнер |
+| `get <путь>... [хост]` | скопировать файл из контейнера на компьютер |
+| `lls [путь]` | список каталога хоста |
+| `lcd [путь]` | сменить каталог хоста (без аргумента — домашний) |
+| `lpwd` | текущий каталог хоста |
+| `info` | сведения о контейнере: uuid, KDF, поколения заголовка и индекса, число файлов/каталогов и объём содержимого |
+| `passwd` | сменить пароль контейнера |
+| `edit <файл>` | редактор в памяти (см. ниже) |
+| `help [<команда>]` | справка: список или подробно по команде (есть тема `help host`) |
+| `exit`, `quit`, `q` | выход (ключи стираются из памяти) |
+
+Редактирование строки ввода:
+
+| Клавиша | Действие |
+|---------|----------|
+| Tab | дополнить команду или путь |
+| Backspace | удалить символ (корректно для кириллицы) |
+| Ctrl+U | очистить строку |
+| Enter | выполнить |
+| Ctrl+C, Ctrl+D на пустой строке | выйти из shell |
+
+Стрелки, история команд и перемещение курсора внутри строки пока
+не поддерживаются — клавиши со стрелками просто игнорируются.
+
+Особенности:
+
+- **Tab-автодополнение**: дополняются имена команд, пути внутри
+  контейнера (ls/cd/mkdir/rm/cat/stat/mv/edit/get) и пути хоста
+  (put/lcd/lls, а также get с префиксом `host:`); при нескольких вариантах
+  сначала дополняется общий префикс, следующий Tab показывает список;
+  кавычки для имён с пробелами ставятся автоматически.
+- **Пути хоста можно помечать префиксом `host:`**, чтобы не путать стороны:
+  `put host:отчёт.txt /документы/` или `get /документы/отчёт.txt host:отчёт.txt`.
+- Аргументы с пробелами берутся в кавычки: `put "мой файл.txt" /база/`.
+- `put` — копирование: исходный файл на хосте не трогается; при совпадении
+  имени внутри контейнера файл заменяется (старый блоб удаляется).
+- `get` **отказывается перезаписывать** существующий файл на хосте —
+  укажите новое имя или удалите файл сами.
+- Перед каждым приглашением shell проверяет, что носитель на месте; если
+  флешку извлекли, ключи немедленно стираются и сессия завершается.
+- Автоблокировка: после `FV_IDLE_TIMEOUT` секунд бездействия (по умолчанию
+  300) ключи стираются, а при следующем вводе запрашивается пароль
+  (3 попытки); уже набранная команда исполнится сразу после разблокировки.
+
+### Встроенный редактор (`edit`)
+
+Правит текстовый файл **целиком в памяти**: на диск хоста ничего не
+пишется никогда, сохранение (`s`) кладёт текст прямо в зашифрованный
+контейнер. `edit <файл>` открывает существующий файл или создаёт новый.
+
+```text
+edit:/заметки.txt> l                список строк
+edit:/заметки.txt> l 10 20          строки 10..20
+edit:/заметки.txt> e 2 новый текст  заменить строку 2
+edit:/заметки.txt> i 3 вставка      вставить строку перед 3-й
+edit:/заметки.txt> d 4 5            удалить строки 4..5
+edit:/заметки.txt> a ещё строка     добавить в конец
+edit:/заметки.txt> s                сохранить в контейнер (или w)
+edit:/заметки.txt> q                выход (при изменениях — повторить q)
+edit:/заметки.txt> q!               выход без сохранения
+```
+
+Если у `i`/`a` не указан текст, редактор попросит ввести строку отдельно.
+Ограничения: файл до 1 МиБ, строки до 4095 байт, только текст
+(файлы с нулевыми байтами редактор не открывает), за один `l` — не больше
+500 строк. Окончания строк CRLF при сохранении становятся LF.
+
+### Чего нельзя делать из shell
+
+- Команды работают **только внутри контейнера** — файловая система хоста
+  меняется лишь через `put`/`get` (и то и то — только явные пути) и `lcd`
+  (смена текущего каталога).
+- В контейнер нельзя «положить каталог» одним `put` — копируются файлы;
+  создайте каталог `mkdir` и скопируйте файлы (`put` принимает несколько
+  файлов сразу: `put a.txt b.txt /каталог`).
+
+---
+
+## Контейнер изнутри
+
+Контейнер — обычный каталог на флешке:
+
+```text
+work/
+├── header.0        # слот заголовка (132 байта: magic FOXVAULT, формат 1,
+├── header.1        #   поколение, число итераций KDF, соль 32 Б,
+│                   #   uuid 16 Б, зашифрованный (запечатанный) мастер-ключ)
+├── index.0         # слот шифрованного индекса: полное дерево каталогов,
+├── index.1         #   имена файлов, размеры, ссылки на блобы
+└── blobs/          # содержимое файлов под случайными именами (32 hex + .bin)
+```
+
+- Оба заголовка и оба слота индекса несут **номера поколений**; читается
+  всегда слот с наибольшим валидным поколением, пишется — противоположный.
+  Каждая запись: временный файл → fsync → атомарная замена → fsync каталога
+  (на Windows fsync каталога не выполняется — ОС его не предоставляет).
+  Выдёргивание флешки в любой момент оставляет контейнер целым.
+- При открытии выполняется сборка мусора: осиротевшие блобы (на которые нет
+  ссылок в индексе) удаляются.
+- Если блоб или индекс повреждены (или подменены), GCM-тег не сойдётся
+  и операция будет отклонена.
+
+### Что видно без пароля
+
+Только: uuid, параметры KDF, поколение заголовка, **количество блобов
+и суммарный размер на диске**. Имена файлов, дерево каталогов и содержимое
+скрыты шифрованием индекса и блобов.
+
+---
+
+## Безопасность
+
+- **Шифрование**: AES-256-GCM. Nonce 12 Б, тег 16 Б на каждый чанк;
+  в AAD блоба входят uuid контейнера, имя блоба и номер чанка — блобы
+  нельзя переставлять местами или переносить в другой контейнер.
+- **KDF**: PBKDF2-HMAC-SHA256, соль 32 Б, по умолчанию 600 000 итераций
+  (допустимые значения в заголовке: 100 000 … 100 000 000).
+- **Конверт**: из пароля выводится KEK, им обёрнут случайный мастер-ключ.
+  Смена пароля переписывает только два заголовка по 132 байта. Уничтожение:
+  `destroy` затирает заголовки случайными байтами — мастер-ключ утрачивается,
+  блобы остаются, но становятся нечитаемыми навсегда.
+- **Память**: буферы ключей под `mlock`/`VirtualLock` (не вытесняются
+  в swap), пароли и ключи затираются сразу после использования.
+- **Автоблокировка**: переменная `FV_IDLE_TIMEOUT` задаёт лимит простоя
+  в секундах (`0` — отключить); при срабатывании ключи стираются, для
+  продолжения нужен пароль. Извлечение носителя — то же самое.
+- **Явность**: открытый текст файла появляется только в памяти и только
+  на время операции; на диск хоста он попадает исключительно при явном
+  `get`/`cp`, и никогда не поверх существующего файла.
+
+---
+
+## Ограничения
+
+- Пароль: до 511 байт UTF-8; имя файла: до 255 байт UTF-8; строка команды:
+  до 4095 байт; до 63 аргументов.
+- Нет скрытых томов/правдоподобного отрицания: сам факт существования
+  контейнера и его размер видны.
+- Скорость ограничена флешкой: каждый чанк шифруется с собственным nonce
+  и тегом, записи идут в новые файлы (никаких перезаписей на месте).
+- `destroy` затирает заголовки, но не блобы: физическое стирание ячеек
+  флешки контроллером не гарантируется ничем (как и у любых других
+  утилит для flash-носителей).
+- Ввод строки в shell — без истории и без перемещения курсора.
+- Ширина символов в консоли Windows считается равной одной ячейке:
+  имена с иероглифами/эмодзи (двойная ширина) могут перерисовываться
+  со сдвигом. Кириллица и латиница отображаются корректно.
+
+---
+
+## Переменные окружения
+
+| Переменная | Платформа | Назначение |
+|-----------|-----------|-----------|
+| `FV_IDLE_TIMEOUT` | обе | секунд простоя до автоблокировки (по умолчанию `300`, `0` — отключить) |
+| `APPDATA`, `USERPROFILE` | Windows | каталог alias-файла и раскрытие `~` |
+| `XDG_CONFIG_HOME`, `HOME` | Linux | каталог alias-файла и раскрытие `~` |
+
+---
+
+## Тесты
+
+**Функциональный набор** `scripts/test_foxvault.sh` — 41 проверка в 18
+блоках: создание и слоты, повторное создание, неверный пароль, сессия
+shell с кириллицей (mkdir/put/ls/cd/stat/cat/mv/get/rm/info), побитовая
+точность `put`/`get` на 5 МБ (20 чанков) и на границах чанка, пустой файл,
+`cp` без shell, отказ перезаписи `get`, сохранность после переоткрытия,
+смена пароля, порча слота индекса и блоба, GC осиротевших блобов, alias,
+`info` без пароля, `destroy`, справка снаружи и внутри shell, редактор
+`edit` (замена, вставка, удаление, отказ на двоичных файлах), подавление
+анимации в пайпе.
+
+```sh
+cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-linux
+BIN=$PWD/build-linux/foxvault bash scripts/test_foxvault.sh
+```
+
+Скрипт использует GNU `stat -c` и `/dev/urandom`, поэтому запускается
+в Linux; с Windows — через контейнер `foxvault-build` (см. «Linux через
+Docker»). Переменную `BIN` указывайте всегда: путь по умолчанию внутри
+скрипта относится к машине разработки.
+
+**Отдельные проверки** (собираются вручную вместе с исходниками и mbedTLS):
+
+| Файл | Что проверяет |
+|------|---------------|
+| `scripts/test_kdf.c` | `fv_kdf_ex` совпадает с эталонным PBKDF2 Mbed TLS (известный тестовый вектор и случайные входы, кириллический и пустой пароль), колбэк прогресса вызывается |
+| `scripts/test_unlock.c` | open → lock → unlock тем же паролем → операция после разблокировки (ожидает готовый контейнер `/tmp/vunlock-t/v` с паролем `pass-12345678`) |
+| `scripts/test_tab.c` | Tab-дополнение: команды, пути контейнера, каталоги со слэшем, `host:`-пути, общий префикс, кавычки (подключает `shell.c` напрямую) |
+| `scripts/test_animation_pty.py` | анимация «Создаю контейнер...» в настоящем pty (путь к бинарнику задаётся в `BIN` внутри скрипта) |
+
+Набор прогонялся также под AddressSanitizer + UBSan (`-DFV_ASAN=ON`).
+
+Интерактивный ввод в Windows-консоли автотестами не покрыт (тесты
+работают через пайпы) — после изменений в `plat_readline_ex` проверяйте
+вручную в cmd/PowerShell/Windows Terminal: латиница, кириллица,
+Backspace по кириллице, Tab со списком вариантов, длинная строка
+с переносом внизу окна.
+
+---
+
+## Состав исходников
+
+| Файл | Роль |
+|------|------|
+| `src/main.c` | CLI: create/open/cp/info/passwd/destroy/alias/unalias, alias-хранилище, справка |
+| `src/shell.c` | REPL внутри контейнера, парсер аргументов с кавычками, Tab-дополнение, редактор `edit`, автоблокировка |
+| `src/vault.c` | жизненный цикл контейнера, двухслотовые записи, mkdir/rm/mv/put/get/cat/stat, смена пароля |
+| `src/index.c` | шифрованный индекс: канонизация путей, сериализация, строгая валидация |
+| `src/blob.c` | блобы FVBL: чанки 256 КиБ, AAD, контроль размеров |
+| `src/crypto.c` | AES-256-GCM, PBKDF2, запечатывание мастер-ключа |
+| `src/platform.c` | платформенный слой: ввод пароля без эха, строчный редактор (Windows-консоль / termios), случайность, mlock, атомарные замены, fsync, UTF-8↔UTF-16, обход каталогов |
+| `src/util.c` | общие помощники (коды ошибок, буферы, hex, человекочитаемые размеры, пути) |
+| `config/foxvault_mbedtls_config.h` | минимальный конфиг Mbed TLS для этой сборки |
+| `Dockerfile.build` | образ для сборки статического Linux-бинарника (Alpine/musl) и запуска тестов |
+| `scripts/build_win.sh` | кросс-компиляция статического exe под Windows (zig cc) |
+| `scripts/test_*.{sh,c,py}` | тесты (см. выше) |
+
+---
+
+## Изменения
+
+### После 1.1.0 — исправления ввода в Windows-консоли
+
+(в `main.c` версия пока `1.1.0`; при выпуске стоит поднять `FV_VERSION`
+до `1.1.1`)
+
+
+- Символы читались из `AsciiChar` (младший байт UTF-16) вместо
+  `UnicodeChar`: кириллица превращалась в цифры и латиницу, часть
+  символов — в «иероглифы» (полуширинные знаки U+FF80…U+FFFF).
+  Теперь ввод берётся из `UnicodeChar`, суррогатные пары и автоповтор
+  клавиш обрабатываются.
+- Приглашение `foxvault:/>` дублировалось при наборе каждого символа:
+  оно печаталось через `stdout`, а позиция начала строки запоминалась
+  уже после него. Теперь приглашение и строка рисуются одним вызовом
+  `WriteConsoleW` от сохранённой позиции.
+- Перерисовка учитывает прокрутку консоли, когда длинная строка
+  переносится в самом низу окна.
+- При выводе в не-консоль (stdout перенаправлен) эхо многобайтовых
+  символов печаталось первым байтом — исправлено.
+>>>>>>> 530b846 (Init)

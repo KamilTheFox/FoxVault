@@ -1,0 +1,10 @@
+# Образ для сборки foxvault под Linux (статический бинарник, musl)
+FROM alpine:3.22
+
+# coreutils и bash нужны для scripts/test_foxvault.sh (GNU stat -c)
+RUN apk add --no-cache build-base cmake ninja git bash coreutils
+
+WORKDIR /src
+
+# по умолчанию: собрать в build-linux
+CMD ["sh", "-c", "cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-static && cmake --build build-linux"]
