@@ -39,6 +39,8 @@ endif()
 add_executable(foxvault
     src/main.c
     src/shell.c
+    src/editor.c
+    src/rx.c
     src/vault.c
     src/index.c
     src/blob.c

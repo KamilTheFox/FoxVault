@@ -44,6 +44,12 @@ $ZIG cc $TARGET -O2 -std=gnu11 -Wall -Wextra -Wno-format-truncation \
 $ZIG cc $TARGET -O2 -std=gnu11 -Wall -Wextra -Wno-format-truncation \
     -Isrc $MBEDCFG -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN \
     -c src/util.c     -o $OUT/obj/util.o &
+$ZIG cc $TARGET -O2 -std=gnu11 -Wall -Wextra -Wno-format-truncation \
+    -Isrc $MBEDCFG -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN \
+    -c src/editor.c   -o $OUT/obj/editor.o &
+$ZIG cc $TARGET -O2 -std=gnu11 -Wall -Wextra -Wno-format-truncation \
+    -Isrc $MBEDCFG -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN \
+    -c src/rx.c       -o $OUT/obj/rx.o &
 wait
 
 echo "== link =="

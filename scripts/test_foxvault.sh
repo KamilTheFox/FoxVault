@@ -1,6 +1,11 @@
 #!/bin/bash
 # Функциональные тесты foxvault
-BIN=${BIN:-/home/z/my-project/foxvault/build/foxvault}
+# Запуск: BIN=$PWD/build-linux/foxvault bash scripts/test_foxvault.sh
+BIN=${BIN:-$(cd "$(dirname "$0")/.." && pwd)/build-linux/foxvault}
+if [ ! -x "$BIN" ]; then
+    echo "не найден бинарник: $BIN (задайте BIN=путь/к/foxvault)"
+    exit 2
+fi
 T=$(mktemp -d /tmp/fvtest.XXXXXX)
 PASS=0; FAIL=0
 
@@ -61,7 +66,6 @@ printf 'test-password-123\n' | $BIN cp "$V:/cp-test.txt" "$O/cp-test.txt" >/dev/
 cmp -s "$H/привет.txt" "$O/cp-test.txt"
 check "cp хост -> контейнер -> хост"
 
-printf 'new-password-456\n' | true  # заглушка (пароль ещё старый на этом шаге)
 printf 'test-password-123\n' | $BIN cp "$V:/архив/over.bin" "$O/over.bin" >/dev/null 2>&1
 cmp -s "$H/over.bin" "$O/over.bin"
 check "cp контейнер -> хост (2-чанковый файл)"
@@ -188,8 +192,6 @@ printf 'test-password-123\nput %s/bin.dat /бинарка.bin\nedit /бинар�
 grep -q "двоичные" "$T/edit4.log"
 check "edit: двоичный файл отклоняется"
 printf 'test-password-123\nedit /заметки.txt\nq\nexit\n' | $BIN open "$V2" >"$T/edit5.log" 2>&1
-grep -q "вышли\|сохранено" "$T/edit5.log" || true
-# проверим, что q без изменений выходит тихо
 grep -q "редактор" "$T/edit5.log"
 check "edit: повторное открытие файла работает"
 
@@ -204,6 +206,113 @@ fi
 OUT2=$($BIN create "$V2" <<< $'pass-123456\npass-123456\n' 2>&1)
 [ $? -ne 0 ]
 check "повторное создание по-прежнему отклоняется"
+
+echo "== 19. шаблоны в put/get"
+G=$T/glob
+mkdir -p "$G/src" "$G/out" "$G/out2"
+for n in отчёт-1 отчёт-2 отчёт-3; do echo "$n" > "$G/src/$n.txt"; done
+echo "csv" > "$G/src/данные.csv"
+echo "скрытый" > "$G/src/.secret.txt"
+mkdir -p "$G/src/каталог.txt"            # каталог под шаблоном — должен пропускаться
+printf 'test-password-123\nmkdir /g\nput %s/src/*.txt /g\nls /g\nexit\n' "$G" \
+    | $BIN open "$V2" > "$T/glob1.log" 2>&1
+grep -q "скопировано 3 из 3" "$T/glob1.log"
+check "put *.txt: скопированы ровно 3 файла"
+grep -q "отчёт-2.txt" "$T/glob1.log" && ! grep -q "данные.csv" "$T/glob1.log"
+check "put *.txt: .csv не попал"
+! grep -q "secret" "$T/glob1.log" && ! grep -q "каталог.txt" "$T/glob1.log"
+check "put *.txt: скрытые файлы и каталоги пропущены"
+
+printf 'test-password-123\nlcd %s/src\nmkdir /g2\nput отчёт-?.txt /g2\nput "отчёт-[13].txt" /g2\nput отчёт-[13].txt /g\nls /g2\nexit\n' "$G" \
+    | $BIN open "$V2" > "$T/glob2.log" 2>&1
+grep -q "скопировано 3 из 3" "$T/glob2.log"
+check "put отчёт-?.txt относительно lcd"
+grep -q "отчёт-\[13\].txt: не найдено" "$T/glob2.log"
+check "шаблон в кавычках берётся буквально"
+grep -q "скопировано 2 из 2" "$T/glob2.log"
+check "класс [13] выбирает два файла"
+
+printf 'test-password-123\nget /g/*.txt %s/out\ncd /g\nget отчёт-[!2].txt %s/out2\nexit\n' "$G" "$G" \
+    | $BIN open "$V2" > "$T/glob3.log" 2>&1
+cmp -s "$G/src/отчёт-1.txt" "$G/out/отчёт-1.txt" && cmp -s "$G/src/отчёт-3.txt" "$G/out/отчёт-3.txt" \
+    && [ -f "$G/out/отчёт-2.txt" ]
+check "get /g/*.txt: все три файла на месте и совпадают"
+[ -f "$G/out2/отчёт-1.txt" ] && [ -f "$G/out2/отчёт-3.txt" ] && [ ! -f "$G/out2/отчёт-2.txt" ]
+check "get отчёт-[!2].txt из текущего каталога контейнера"
+
+printf 'test-password-123\nget /g/*.txt %s/out\nexit\n' "$G" \
+    | $BIN open "$V2" > "$T/glob4.log" 2>&1
+grep -q "скопировано 0 из 3" "$T/glob4.log" && grep -q "уже есть файл" "$T/glob4.log"
+check "get по шаблону не перезаписывает существующие файлы"
+
+printf 'test-password-123\nput %s/src/*.pdf /g\nget /g/*.zip %s/out\nput %s/src/*.txt /нет-такого\nput %s/*/x.txt /g\nexit\n' "$G" "$G/out" "$G" "$G" \
+    | $BIN open "$V2" > "$T/glob5.log" 2>&1
+grep -q "\*.pdf: нет подходящих файлов" "$T/glob5.log" && grep -q "\*.zip: нет подходящих файлов" "$T/glob5.log"
+check "шаблон без совпадений — ошибка, а не тишина"
+grep -q "каталог назначения не найден" "$T/glob5.log"
+check "несколько файлов в несуществующий каталог — отказ"
+grep -q "только в имени файла" "$T/glob5.log"
+check "шаблон в каталоге отклоняется"
+
+printf 'test-password-123\nget /g/отчёт-1.txt %s\nexit\n' "$G/out2" \
+    | $BIN open "$V2" > "$T/glob6.log" 2>&1
+printf 'test-password-123\ncd /g\nget отчёт-2.txt %s\nexit\n' "$G/out2" \
+    | $BIN open "$V2" > "$T/glob7.log" 2>&1
+[ -f "$G/out2/отчёт-2.txt" ]
+check "get относительного пути берёт файл из текущего каталога (cd)"
+
+echo "== 20. история команд"
+printf 'test-password-123\nls /\npwd\npwd\n ls /g\nhistory\nhistory 2\nhistory -c\nhistory\nexit\n' \
+    | $BIN open "$V2" > "$T/hist.log" 2>&1
+grep -qE " 1  ls /$" "$T/hist.log" && grep -qE " 2  pwd$" "$T/hist.log"
+check "history показывает введённые команды"
+! grep -qE " 3  pwd$" "$T/hist.log"
+check "повтор подряд не дублируется"
+! grep -qE " [0-9]+  +ls /g$" "$T/hist.log"
+check "строка с пробелом в начале не попадает в историю"
+grep -qE " 3  history$" "$T/hist.log" && grep -qE " 4  history 2$" "$T/hist.log"
+check "history N показывает последние N"
+grep -q "история очищена" "$T/hist.log"
+check "history -c очищает"
+printf 'test-password-123\nhelp keys\nhelp glob\nhelp history\nexit\n' | $BIN open "$V2" > "$T/hist2.log" 2>&1
+grep -q "Ctrl+W" "$T/hist2.log" && grep -q "\[a-z\]" "$T/hist2.log" && grep -q "на диск она не пишется" "$T/hist2.log"
+check "справка keys/glob/history"
+
+echo "== 21. grep и конвейеры"
+printf 'line one\nthe blobs dir\nlength and enth\nОшибка в модуле\nошибка вторая\nnothing\n' > "$T/g.txt"
+printf 'TODO: a\nok\n' > "$T/g.md"
+printf 'test-password-123\nput %s/g.txt /\nput %s/g.md /\nexit\n' "$T" "$T" | $BIN open "$V2" >/dev/null 2>&1
+gsh() { printf 'test-password-123\n%s\nexit\n' "$1" | $BIN open "$V2" 2>&1 | sed 's/foxvault:[^>]*> /\n/g'; }
+OUT=$(gsh 'cat g.txt | grep "enth|blobs"')
+echo "$OUT" | grep -qx "the blobs dir" && echo "$OUT" | grep -qx "length and enth" && ! echo "$OUT" | grep -q "line one"
+check "cat файл | grep \"enth|blobs\" — альтернатива |"
+OUT=$(gsh 'grep -in ошибка g.txt')
+echo "$OUT" | grep -qx "4:Ошибка в модуле" && echo "$OUT" | grep -qx "5:ошибка вторая"
+check "grep -in: кириллица без учёта регистра, номера строк"
+OUT=$(gsh 'grep -c о g.txt g.md')
+echo "$OUT" | grep -qx "/g.txt:2" && echo "$OUT" | grep -qx "/g.md:0"
+check "grep -c по нескольким файлам — с именами"
+OUT=$(gsh 'cat *.txt *.md | grep -v о | grep -n e')
+echo "$OUT" | grep -qx "3:length and enth" && ! echo "$OUT" | grep -q "nothing"
+check "маски в cat + цепочка grep -v | grep -n"
+OUT=$(gsh 'ls / | grep "\.md$"')
+echo "$OUT" | grep -qx "g.md" && ! echo "$OUT" | grep -q "g.txt"
+check "ls | grep"
+OUT=$(gsh 'grep -F "a.d" g.txt')
+[ -z "$(echo "$OUT" | grep -v '^Пароль' | grep -v '^$')" ]
+check "grep -F: точка — просто точка"
+OUT=$(gsh 'grep "^(line|the) " g.txt')
+echo "$OUT" | grep -qx "line one" && echo "$OUT" | grep -qx "the blobs dir"
+check "группы, ^ и пробел в шаблоне"
+OUT=$(gsh 'grep "(abc" g.txt')
+echo "$OUT" | grep -q "не закрыта скобка"
+check "ошибка в шаблоне объясняется"
+OUT=$(gsh 'cat g.txt | sort')
+echo "$OUT" | grep -q "справа от | поддерживается только grep"
+check "справа от | — только grep"
+OUT=$(gsh 'grep enth')
+echo "$OUT" | grep -q "укажите файлы"
+check "grep без файлов подсказывает форму с |"
 
 echo
 echo "======================================"

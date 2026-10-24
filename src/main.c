@@ -28,7 +28,7 @@
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 #endif
 
-#define FV_VERSION "1.1.0"
+#define FV_VERSION "1.2.0"
 #define HDR_SIZE_FALLBACK 132u
 
 static const char *USAGE =
@@ -51,8 +51,10 @@ static const char *USAGE =
     "Справка по команде: foxvault help <команда> или <команда> --help.\n"
     "\n"
     "Внутри shell: ls, cd, pwd, mkdir, mv, rm, cat, stat, put, get,\n"
-    "lls, lcd, lpwd, info, passwd, edit, help, exit.\n"
-    "Tab дополняет команды и пути.\n";
+    "lls, lcd, lpwd, info, passwd, edit, grep, history, help, exit.\n"
+    "Tab дополняет команды и пути, стрелки двигают курсор и листают историю,\n"
+    "put/get/cat/grep понимают маски: put *.txt /документы/,\n"
+    "есть конвейер: cat отчёт.txt | grep \"долг|кредит\"\n";
 
 /* ---------- темы справки по командам ---------- */
 
@@ -90,7 +92,9 @@ static const help_topic TOPICS[] = {
 "  foxvault cp C:\\temp\\a.bin work:/       (однобуквенное C: — это диск)\n"
 "Пароль запрашивается на время копирования и сразу стирается.\n"
 "get-сторона не перезаписывает существующие файлы хоста; в контейнере\n"
-"файл при совпадении имени заменяется.\n" },
+"файл при совпадении имени заменяется.\n"
+"Шаблоны (*.txt) здесь не раскрываются — для них используйте put/get\n"
+"внутри shell.\n" },
 { "info",
 "foxvault info <контейнер> — сведения БЕЗ пароля.\n"
 "Показывает: uuid, формат (foxvault 1, AES-256-GCM), число итераций\n"

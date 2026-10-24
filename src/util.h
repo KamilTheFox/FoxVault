@@ -72,4 +72,18 @@ int  fv_dirname(const char *path, char *out, size_t len);
 /* Склейка a + сепаратор + b (сепаратор ставится, только если a им не кончается) */
 void fv_path_join(char *out, size_t n, const char *a, const char *b);
 
+/* --- UTF-8 --- */
+
+/* Декодировать один символ из [*p, end) и сдвинуть *p (минимум на байт).
+ * Битый байт b возвращается как 0xDC00 + b (как surrogateescape в Python):
+ * такой код уникален и не совпадёт ни с одним настоящим символом. */
+uint32_t fv_u8_decode(const char **p, const char *end);
+
+/* Без учёта регистра: латиница и кириллица (А..Я, Ё, Ђ..Џ) -> строчные */
+uint32_t fv_fold_cp(uint32_t c);
+
+/* Ширина символа на экране: 0 — комбинирующий, 2 — широкий (CJK, эмодзи),
+ * иначе 1 */
+int fv_cp_width(uint32_t c);
+
 #endif

@@ -226,3 +226,47 @@ void fv_path_join(char *out, size_t n, const char *a, const char *b)
     const char *sep = (la && a[la - 1] != '/' && a[la - 1] != '\\') ? FV_PATH_SEP_STR : "";
     snprintf(out, n, "%s%s%s", a, sep, b);
 }
+
+/* ---------- UTF-8 ---------- */
+
+uint32_t fv_u8_decode(const char **pp, const char *end)
+{
+    const unsigned char *p = (const unsigned char *)*pp;
+    const unsigned char *e = (const unsigned char *)end;
+    uint32_t c = p[0];
+    size_t n;
+    if (c < 0x80)                     { *pp += 1; return c; }
+    else if (c >= 0xC2 && c < 0xE0)   { c &= 0x1F; n = 1; }
+    else if (c >= 0xE0 && c < 0xF0)   { c &= 0x0F; n = 2; }
+    else if (c >= 0xF0 && c < 0xF5)   { c &= 0x07; n = 3; }
+    else                              { *pp += 1; return 0xDC00u + p[0]; }
+    if ((size_t)(e - p) <= n) { *pp += 1; return 0xDC00u + p[0]; }
+    for (size_t i = 1; i <= n; i++) {
+        if ((p[i] & 0xC0) != 0x80) { *pp += 1; return 0xDC00u + p[0]; }
+        c = (c << 6) | (p[i] & 0x3F);
+    }
+    *pp += n + 1;
+    return c;
+}
+
+uint32_t fv_fold_cp(uint32_t c)
+{
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    if (c >= 0x410 && c <= 0x42F) return c + 0x20;      /* А..Я */
+    if (c >= 0x400 && c <= 0x40F) return c + 0x50;      /* Ѐ..Џ, в том числе Ё */
+    return c;
+}
+
+int fv_cp_width(uint32_t c)
+{
+    if ((c >= 0x300 && c <= 0x36F) || (c >= 0x200B && c <= 0x200F) ||
+        (c >= 0xFE00 && c <= 0xFE0F))
+        return 0;                                        /* комбинирующие, ZWSP */
+    if ((c >= 0x1100 && c <= 0x115F) || (c >= 0x2E80 && c <= 0xA4CF) ||
+        (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xF900 && c <= 0xFAFF) ||
+        (c >= 0xFE30 && c <= 0xFE4F) || (c >= 0xFF00 && c <= 0xFF60) ||
+        (c >= 0xFFE0 && c <= 0xFFE6) || (c >= 0x1F300 && c <= 0x1FAFF) ||
+        (c >= 0x20000 && c <= 0x3FFFD))
+        return 2;                                        /* CJK, эмодзи */
+    return 1;
+}
